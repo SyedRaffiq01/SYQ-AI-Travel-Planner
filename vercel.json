@@ -1,0 +1,14 @@
+{
+  "builds": [
+    {
+      "src": "Travel Planner agent/Travel-Planner-AI/app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "Travel Planner agent/Travel-Planner-AI/app.py"
+    }
+  ]
+}
