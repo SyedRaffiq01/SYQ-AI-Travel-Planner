@@ -1,24 +1,10 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
-import google.generativeai as genai
-import os
+from http.server import BaseHTTPRequestHandler
 import json
+import os
+import urllib.parse
+import google.generativeai as genai
 
-# Initialize FastAPI app
-app = FastAPI()
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Configure Gemini API
+# Initialize Gemini
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
     try:
@@ -30,62 +16,89 @@ if GEMINI_API_KEY:
 else:
     model = None
 
-class TravelRequest(BaseModel):
-    source: str
-    destination: str
-    start_date: str
-    end_date: str
-    budget: float
-    travelers: int
-    interests: List[str]
-    include_flights: bool = False
+class handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests"""
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
-class ChatRequest(BaseModel):
-    question: str
-    travel_plan: str
+    def do_GET(self):
+        """Handle GET requests"""
+        if self.path == '/' or self.path == '/api' or self.path == '/api/':
+            self.send_json_response({
+                "message": "Travel Planning AI API is running",
+                "status": "healthy",
+                "gemini_configured": bool(model),
+                "endpoints": ["/api/health", "/api/generate-plan", "/api/chat"]
+            })
+        elif self.path == '/api/health':
+            self.send_json_response({
+                "status": "healthy",
+                "gemini_api_configured": bool(model),
+                "environment_vars": {
+                    "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
+                    "GOOGLE_API_KEY": bool(os.environ.get("GOOGLE_API_KEY"))
+                }
+            })
+        else:
+            self.send_error_response(404, "Endpoint not found")
 
-@app.get("/api")
-@app.get("/api/")
-async def root():
-    """API root endpoint"""
-    return {
-        "message": "Travel Planning AI API is running",
-        "status": "healthy",
-        "gemini_configured": bool(model),
-        "endpoints": ["/api/health", "/api/generate-plan", "/api/chat"]
-    }
+    def do_POST(self):
+        """Handle POST requests"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+            else:
+                data = {}
 
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "gemini_api_configured": bool(model),
-        "environment_vars": {
-            "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
-            "GOOGLE_API_KEY": bool(os.environ.get("GOOGLE_API_KEY"))
-        }
-    }
+            if self.path == '/api/generate-plan':
+                self.handle_generate_plan(data)
+            elif self.path == '/api/chat':
+                self.handle_chat(data)
+            elif self.path == '/api/plan-trip':
+                self.handle_generate_plan(data)  # Legacy endpoint
+            else:
+                self.send_error_response(404, "Endpoint not found")
+                
+        except json.JSONDecodeError:
+            self.send_error_response(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error_response(500, f"Server error: {str(e)}")
 
-@app.post("/api/generate-plan")
-async def generate_travel_plan(request: TravelRequest):
-    """Generate a comprehensive travel plan"""
-    try:
-        if not model:
-            raise HTTPException(
-                status_code=500, 
-                detail="Gemini AI is not configured. Please set GEMINI_API_KEY environment variable."
-            )
-        
-        # Construct the prompt
-        prompt = f"""
+    def handle_generate_plan(self, data):
+        """Handle travel plan generation"""
+        try:
+            if not model:
+                self.send_error_response(500, "Gemini AI is not configured. Please set GEMINI_API_KEY environment variable.")
+                return
+
+            # Extract request data
+            source = data.get('source', '')
+            destination = data.get('destination', '')
+            start_date = data.get('start_date', '')
+            end_date = data.get('end_date', '')
+            budget = data.get('budget', 0)
+            travelers = data.get('travelers', 1)
+            interests = data.get('interests', [])
+
+            if not all([source, destination, start_date, end_date]):
+                self.send_error_response(400, "Missing required fields: source, destination, start_date, end_date")
+                return
+
+            # Create prompt
+            prompt = f"""
 Create a detailed travel plan with the following details:
-From: {request.source}
-To: {request.destination}
-Dates: {request.start_date} to {request.end_date}
-Budget: ₹{request.budget} (Indian Rupees)
-Number of Travelers: {request.travelers}
-Interests: {', '.join(request.interests)}
+From: {source}
+To: {destination}
+Dates: {start_date} to {end_date}
+Budget: ₹{budget} (Indian Rupees)
+Number of Travelers: {travelers}
+Interests: {', '.join(interests)}
 
 Please provide:
 1. Day-by-day itinerary
@@ -101,68 +114,87 @@ Note: All cost estimates should be provided in Indian Rupees (INR) with ₹ symb
 Format the response in markdown for better readability.
 """
 
-        # Generate response using Gemini
-        response = model.generate_content(prompt)
-        
-        if not response or not response.text:
-            raise HTTPException(status_code=500, detail="Failed to generate travel plan")
+            # Generate response
+            response = model.generate_content(prompt)
+            
+            if not response or not response.text:
+                self.send_error_response(500, "Failed to generate travel plan")
+                return
 
-        # Format the travel plan
-        travel_plan = f"""# Your Travel Plan
+            travel_plan = f"""# Your Travel Plan
 
 {response.text}
 """
 
-        return {
-            "success": True,
-            "plan": travel_plan,
-            "flight_details": None
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error in generate_travel_plan: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+            self.send_json_response({
+                "success": True,
+                "plan": travel_plan,
+                "flight_details": None
+            })
 
-@app.post("/api/chat")
-async def chat_with_plan(request: ChatRequest):
-    """Chat about the travel plan"""
-    try:
-        if not model:
-            raise HTTPException(
-                status_code=500, 
-                detail="Gemini AI is not configured. Please set GEMINI_API_KEY environment variable."
-            )
-            
-        prompt = f"""
+        except Exception as e:
+            self.send_error_response(500, f"Error generating travel plan: {str(e)}")
+
+    def handle_chat(self, data):
+        """Handle chat requests"""
+        try:
+            if not model:
+                self.send_error_response(500, "Gemini AI is not configured. Please set GEMINI_API_KEY environment variable.")
+                return
+
+            question = data.get('question', '')
+            travel_plan = data.get('travel_plan', '')
+
+            if not question:
+                self.send_error_response(400, "Missing required field: question")
+                return
+
+            prompt = f"""
 Given this travel plan:
-{request.travel_plan}
+{travel_plan}
 
 Please answer this question about the plan:
-{request.question}
+{question}
 
 Provide a clear and concise response, using markdown formatting where appropriate.
 If the question is about something not covered in the plan, suggest relevant information or alternatives.
 """
 
-        response = model.generate_content(prompt)
-        
-        if not response or not response.text:
-            raise HTTPException(status_code=500, detail="Failed to generate response")
+            response = model.generate_content(prompt)
             
-        return {
-            "success": True,
-            "response": response.text
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error in chat_with_plan: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+            if not response or not response.text:
+                self.send_error_response(500, "Failed to generate response")
+                return
 
-@app.post("/api/plan-trip")
-async def plan_trip(request: TravelRequest):
-    """Legacy endpoint for backward compatibility"""
-    return await generate_travel_plan(request)
+            self.send_json_response({
+                "success": True,
+                "response": response.text
+            })
+
+        except Exception as e:
+            self.send_error_response(500, f"Error in chat: {str(e)}")
+
+    def send_json_response(self, data, status_code=200):
+        """Send JSON response with CORS headers"""
+        self.send_response(status_code)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def send_error_response(self, status_code, message):
+        """Send error response with CORS headers"""
+        self.send_response(status_code)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+        
+        error_response = {
+            "success": False,
+            "detail": message
+        }
+        self.wfile.write(json.dumps(error_response).encode())
