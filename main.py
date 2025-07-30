@@ -78,7 +78,7 @@ def get_flight_data(source, destination, start_date):
 async def root():
     """Serve the main page or API info"""
     try:
-        return FileResponse('static/index.html')
+        return FileResponse('index.html')
     except FileNotFoundError:
         return {
             "message": "Travel Planning AI API is running",

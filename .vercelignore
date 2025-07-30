@@ -1,0 +1,12 @@
+main.py
+app.py
+railway.json
+Procfile
+Dockerfile
+start.sh
+venv/
+__pycache__/
+*.pyc
+.env
+.git/
+Travel Planner agent/

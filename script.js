@@ -19,7 +19,7 @@ document.getElementById('travelForm').addEventListener('submit', async (e) => {
     const includeFlights = document.getElementById('includeFlights').checked;
 
     try {
-        const response = await fetch('/generate-plan', {
+        const response = await fetch('/api/generate-plan', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -78,7 +78,7 @@ async function sendMessage() {
     addMessageToChat(message, true);
 
     try {
-        const response = await fetch('/chat', {
+        const response = await fetch('/api/chat', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

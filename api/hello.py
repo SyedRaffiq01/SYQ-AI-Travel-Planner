@@ -1,6 +1,5 @@
 from http.server import BaseHTTPRequestHandler
 import json
-import os
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -10,12 +9,8 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         
         response = {
-            "message": "Hello from Vercel!",
-            "status": "working",
-            "environment_vars": {
-                "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
-                "GOOGLE_API_KEY": bool(os.environ.get("GOOGLE_API_KEY"))
-            }
+            "message": "Hello World from Vercel!",
+            "status": "success"
         }
         self.wfile.write(json.dumps(response).encode())
 
