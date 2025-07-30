@@ -1,13 +1,16 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List
 import google.generativeai as genai
 import os
-import json
+import requests
+import uvicorn
 
 # Initialize FastAPI app
-app = FastAPI()
+app = FastAPI(title="Travel Planner AI")
 
 # Add CORS middleware
 app.add_middleware(
@@ -21,14 +24,11 @@ app.add_middleware(
 # Configure Gemini API
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-    except Exception as e:
-        print(f"Error configuring Gemini: {e}")
-        model = None
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
     model = None
+    print("Warning: GEMINI_API_KEY not found in environment variables")
 
 class TravelRequest(BaseModel):
     source: str
@@ -44,18 +44,50 @@ class ChatRequest(BaseModel):
     question: str
     travel_plan: str
 
-@app.get("/api")
-@app.get("/api/")
-async def root():
-    """API root endpoint"""
-    return {
-        "message": "Travel Planning AI API is running",
-        "status": "healthy",
-        "gemini_configured": bool(model),
-        "endpoints": ["/api/health", "/api/generate-plan", "/api/chat"]
-    }
+def get_flight_data(source, destination, start_date):
+    """Fetch flight data from SerpAPI"""
+    try:
+        serp_api_key = os.environ.get("SERP_API_KEY")
+        if not serp_api_key:
+            return None
+            
+        source_code = source.strip().upper()
+        dest_code = destination.strip().upper()
 
-@app.get("/api/health")
+        url = "https://serpapi.com/search.json"
+        params = {
+            "engine": "google_flights",
+            "departure_id": source_code,
+            "arrival_id": dest_code,
+            "outbound_date": start_date,
+            "currency": "INR",
+            "hl": "en",
+            "type": "2",
+            "api_key": serp_api_key
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        print(f"Error fetching flight data: {str(e)}")
+        return None
+
+@app.get("/")
+async def root():
+    """Serve the main page or API info"""
+    try:
+        return FileResponse('static/index.html')
+    except FileNotFoundError:
+        return {
+            "message": "Travel Planning AI API is running",
+            "status": "healthy",
+            "gemini_configured": bool(model),
+            "endpoints": ["/health", "/generate-plan", "/chat", "/plan-trip"]
+        }
+
+@app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {
@@ -63,11 +95,12 @@ async def health_check():
         "gemini_api_configured": bool(model),
         "environment_vars": {
             "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
-            "GOOGLE_API_KEY": bool(os.environ.get("GOOGLE_API_KEY"))
+            "GOOGLE_API_KEY": bool(os.environ.get("GOOGLE_API_KEY")),
+            "SERP_API_KEY": bool(os.environ.get("SERP_API_KEY"))
         }
     }
 
-@app.post("/api/generate-plan")
+@app.post("/generate-plan")
 async def generate_travel_plan(request: TravelRequest):
     """Generate a comprehensive travel plan"""
     try:
@@ -107,6 +140,14 @@ Format the response in markdown for better readability.
         if not response or not response.text:
             raise HTTPException(status_code=500, detail="Failed to generate travel plan")
 
+        # Handle flight data if requested
+        flight_data = None
+        if request.include_flights:
+            try:
+                flight_data = get_flight_data(request.source, request.destination, request.start_date)
+            except Exception as e:
+                print(f"Flight data error: {str(e)}")
+
         # Format the travel plan
         travel_plan = f"""# Your Travel Plan
 
@@ -116,7 +157,7 @@ Format the response in markdown for better readability.
         return {
             "success": True,
             "plan": travel_plan,
-            "flight_details": None
+            "flight_details": flight_data if flight_data else None
         }
         
     except HTTPException:
@@ -125,7 +166,7 @@ Format the response in markdown for better readability.
         print(f"Error in generate_travel_plan: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/api/chat")
+@app.post("/chat")
 async def chat_with_plan(request: ChatRequest):
     """Chat about the travel plan"""
     try:
@@ -162,7 +203,17 @@ If the question is about something not covered in the plan, suggest relevant inf
         print(f"Error in chat_with_plan: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/api/plan-trip")
+@app.post("/plan-trip")
 async def plan_trip(request: TravelRequest):
     """Legacy endpoint for backward compatibility"""
     return await generate_travel_plan(request)
+
+# Mount static files
+try:
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+except Exception as e:
+    print(f"Could not mount static files: {e}")
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
